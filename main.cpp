@@ -1,10 +1,17 @@
 #include <iostream>
 #include <vector>
 #include <conio.h>
+#include <list>
+#include <algorithm>
+#include <iterator>
+#include <functional>
 
 const int EMPTY_COMPONENT = 0;
 const int GRAPHIC_COMPONENT = 1;
 const int NODE_COMPONENT = 2;
+const int GEOM_COMPONENT = 3;
+const int COLLISION_COMPONENT = 4;
+const int SCRIPT_COMPONENT = 5;
 
 class Component
 {
@@ -42,10 +49,18 @@ public:
     {
         this->x=x;
         this->y=y;
+        oldX=x;
+        oldY=y;
     }
 
     int x, y;
+    int oldX,oldY;
 };
+
+bool operator<(const NodeComponent& e1, const NodeComponent& e2)
+{
+    return e1.x < e2.x || (e1.x == e2.x && e1.y < e2.y);
+}
 
 class EmptyComponent : public Component
 {
@@ -56,7 +71,7 @@ private:
     }
     static EmptyComponent * me;
 public:
-    static const EmptyComponent &getInstance()
+    static EmptyComponent &getInstance()
     {
         if(me == nullptr)
         {
@@ -69,10 +84,60 @@ public:
 
 EmptyComponent * EmptyComponent::me = nullptr;
 
+class GeomComponent : public Component
+{
+public:
+    GeomComponent() : Component(GEOM_COMPONENT){}
+    GeomComponent(std::vector<NodeComponent>  points) : GeomComponent()
+    {
+        m_points = points;
+    }
+
+    std::vector<NodeComponent>& getPoints()
+    {
+        return m_points;
+    }
+private:
+    std::vector<NodeComponent> m_points;
+};
+
+///TODO:Find a way to use only one type of script for both collsion reaction and scripts
+class CollisionComponent : public Component
+{
+public:
+    CollisionComponent(std::function<void()> s) : Component(COLLISION_COMPONENT), script(s)
+    {
+
+    }
+    void resolve()
+    {
+        script();
+    }
+private:
+    std::function<void()> script;
+};
+
+class ScriptComponent : public Component
+{
+public:
+    ScriptComponent(std::function<void()> s) : Component(SCRIPT_COMPONENT), script(s)
+    {
+
+    }
+    void execute()
+    {
+        script();
+    }
+private:
+    std::function<void()> script;
+};
+
+////////////////////////////////////////////////
+
 class Entity
 {
 public:
-    enum Type{World, Player};
+    enum Type{Player, PNJ, Ex};
     Entity(Type t)
     {
         type = t;
@@ -85,7 +150,7 @@ public:
         m_components.push_back(&c);
     }
 
-    const Component& getComponent(int id)
+    Component& getComponent(int id)
     {
         for(Component * c: m_components)
         {
@@ -94,6 +159,11 @@ public:
         }
 
         return EmptyComponent::getInstance();
+    }
+
+    bool hasComponent(int id)
+    {
+        return !dynamic_cast<EmptyComponent*>(&getComponent(id));
     }
 
 private:
@@ -173,6 +243,11 @@ private:
     std::vector<std::string> scene;
 };
 
+#define KEY_UP 72
+#define KEY_DOWN 80
+#define KEY_LEFT 75
+#define KEY_RIGHT 77
+
 class PlayingSystem : public System
 {
 public:
@@ -183,13 +258,13 @@ public:
 
         switch(c)
         {
-        case 'z':
+        case 'z'://case KEY_UP:
             x=0;y=-1;break;
-        case 'q':
+        case 'q'://case KEY_LEFT:
              x=-1;y=0;break;
-        case 's':
+        case 's'://case KEY_DOWN:
              x=0;y=1;break;
-        case 'd':
+        case 'd'://case KEY_RIGHT:
              x=1;y=0;break;
         default:
             x=y=0;
@@ -204,79 +279,207 @@ public:
     }
 };
 
-class Engine
+enum {EXIT_REACHED, COLLISION, NPC1_COLLISION_INTERACT};
+
+class MessageSystem : public System
 {
 public:
-    void addEntity(Entity & e){entities.push_back(e);}
-    std::vector<Entity> & getEntities(){return entities;}
-
-    bool update()
+    static void sendMessage(int id)
     {
-        for(System s : m_systems)
-        {
-            s.update();
-        }
-        return false;
+        msg.insert(msg.end(), id);
     }
 
-    void render()
+    static std::list<int>& getMessages()
     {
-        graphics.update();
+        return msg;
     }
 
 private:
-    std::vector<Entity> entities;
-    std::vector<System> m_systems;
-    GraphicSystem graphics;
+    static std::list<int> msg;
 };
 
-class RessourceMgr
+std::list<int> MessageSystem::msg;
+
+///Only collisions here (no velocity update, ...)
+class PhysicSystem : public System
 {
 public:
-    static Entity loadEntity(Entity::Type t)
+    std::vector<Entity*>& getMovingEntities()
     {
-        Entity e(t);
+        //Returns only moving entities (todo)
+        return m_entities;
+    }
 
-        switch(t)
+    std::vector<Entity*>& getFixedEntities(Entity * e)
+    {
+        return m_entities;
+    }
+
+    void update()
+    {
+        ///Detect and Resolve collisions
+        ///Collisions between entities and borders:(10x44)
+
+
+        ///I suppose that I have for now only one "batch"
+        auto currEntity = getMovingEntities().begin();
+        for(Entity * e : getMovingEntities())
         {
-        case Entity::Player:
+            ///Collisions with fixed entities
+            NodeComponent & n = (NodeComponent&)e->getComponent(NODE_COMPONENT);
 
-            break;
-        case Entity::World:
-            break;
-        default:;
+            if(n.x < 0)
+            {
+                n.x=0;
+            }
+            else if(n.x >= 44)
+            {
+                n.x=43;
+            }
+
+            if(n.y < 0)
+            {
+                n.y=0;
+            }
+            else if(n.y >= 10)
+            {
+                n.y=9;
+            }
+
+            currEntity++;
+
+            for(auto it = currEntity; it != getMovingEntities().end(); it++)
+            {
+                doCollisions(e, *it);
+            }
         }
+    }
 
-        return e;
+    std::vector<NodeComponent> getPoints(Entity * e)
+    {
+        ///Different types of shapes(components)
+
+        std::vector<NodeComponent> points;
+        NodeComponent& n2 = ((NodeComponent&)e->getComponent(NODE_COMPONENT));
+
+        if(e->hasComponent(GEOM_COMPONENT))
+        {
+            for(NodeComponent &n : ((GeomComponent&)e->getComponent(GEOM_COMPONENT)).getPoints())
+            {
+                points.push_back(NodeComponent(n2.x+n.x, n2.y+n.y));
+            }
+        }
+        points.push_back(n2);
+
+        return points;
+    }
+
+    void doCollisions(Entity * e1, Entity * e2)
+    {
+        std::vector<NodeComponent> points1 = getPoints(e1);
+        std::vector<NodeComponent> points2 = getPoints(e2);
+
+        std::sort(points1.begin(), points1.end());
+        std::sort(points2.begin(), points2.end());
+
+        std::vector<NodeComponent> inter;
+
+        std::set_intersection(points1.begin(), points1.end(), points2.begin(), points2.end(), std::back_inserter(inter));
+
+        if(!inter.empty())
+        {
+            if(e1->hasComponent(COLLISION_COMPONENT))
+            {
+                ((CollisionComponent&)e1->getComponent(COLLISION_COMPONENT)).resolve();
+            }
+
+            if(e2->hasComponent(COLLISION_COMPONENT))
+            {
+                ((CollisionComponent&)e2->getComponent(COLLISION_COMPONENT)).resolve();
+            }
+        }
     }
 };
 
-void init(Engine & e)
+class GUISystem : public System
 {
-    Entity t = RessourceMgr::loadEntity(Entity::World);
-    e.addEntity(t);
-    t = RessourceMgr::loadEntity(Entity::Player);
-    e.addEntity(t);
-}
-
-
-void run(Engine & e)
-{
-    bool running = true;
-    while(running)
+public:
+    void update()
     {
-        running = e.update();
-        e.render();
+        /*auto it = MessageSystem::getMessages().begin();
+
+        for(int m : MessageSystem::getMessages())
+        {
+            if(m == COLLISION)
+            {
+                std::cout << "Collision !" ;//<< std::endl;
+                MessageSystem::getMessages().erase(it);
+
+            }
+            it++;
+        }*/
+
+        std::list<int> & msg = MessageSystem::getMessages();
+        auto itEnd = msg.end();
+        auto it = msg.begin();
+
+        while(it != itEnd)
+        {
+            bool delMsg = true;
+            switch(*it)
+            {
+            case COLLISION:
+                std::cout << "Collision !";
+                break;
+            case NPC1_COLLISION_INTERACT:
+                std::cout << "Hello my king !";
+                break;
+            default:
+                delMsg = false;
+            }
+            if(delMsg)
+            {
+                auto it2 = it;
+                it++;
+                msg.erase(it2);
+            }
+            else
+            {
+                it++;
+            }
+        }
     }
+};
+
+class ScriptSystem : public System
+{
+public:
+    void update()
+    {
+        for(Entity * e : m_entities)
+        {
+            ((ScriptComponent&)e->getComponent(SCRIPT_COMPONENT)).execute();
+        }
+    }
+};
+
+bool isRunning()
+{
+    for(int m : MessageSystem::getMessages())
+    {
+        if(m == EXIT_REACHED)
+            return false;
+    }
+    return true;
 }
 
 int main()
 {
-    //Engine e;
-    //init(e);
-    //run(e);
-
     GraphicSystem g;
+    PlayingSystem pl;
+    PhysicSystem phys;
+    GUISystem gui;
+    ScriptSystem scriptEngine;
 
     Entity p(Entity::Player);
     p.addComponent(*new GraphicComponent);
@@ -284,29 +487,80 @@ int main()
     p.addComponent(*new NodeComponent(5, 3));
 
     g.addEntity(p);
-
-    //g.update();
-
-    PlayingSystem pl;
     pl.addEntity(p);
+    phys.addEntity(p);
 
-    Entity p2(Entity::Player);
+    Entity p2(Entity::PNJ);
     p2.addComponent(*new GraphicComponent('k'));
     p2.addComponent(*new NodeComponent(9, 5));
+    p2.addComponent(*new GeomComponent({{-1, 0}, {1, 0}, {0, 1}, {0, -1}}));
+    p2.addComponent(*new CollisionComponent([]()
+                                            {
+                                                ///Two options: create an entity and a system that manages entity life(we give like 1 step of living and we increment it in each collsion
+                                                                        ///so that it keeps constant as long as we are colliding)
+                                                /// OR: we create an entity that has a script that listens to those collsions so that we can react when there is no longer a collision
+                                                ///(Those options are basically the same except one is an entity, the other a system)
+
+                                                ///Or I could just run a script in this entity (with a scriptSystem) and read messages that I would send myself ... yeah
+                                                MessageSystem::sendMessage(NPC1_COLLISION_INTERACT);
+                                            }));
+    p2.addComponent(*new ScriptComponent([]()
+                                        {
+                                            static bool wasInColl = false;
+                                            std::list<int> & msg = MessageSystem::getMessages();
+                                            auto itEnd = msg.end();
+                                            auto it = msg.begin();
+
+                                            bool coll = false;
+
+                                            while(it != itEnd)
+                                            {
+                                                if(*it == NPC1_COLLISION_INTERACT)
+                                                {
+                                                    coll = true;
+                                                    auto it2 = it;
+                                                    it++;
+                                                    msg.erase(it2);
+                                                    //MessageSystem::sendMessage(NPC1_COLLISION_INTERACT);
+                                                }
+                                                else
+                                                {
+                                                    it++;
+                                                }
+                                            }
+
+                                            if(coll)
+                                            {
+                                                //allow for behavior
+                                                MessageSystem::sendMessage(NPC1_COLLISION_INTERACT);
+                                            }
+                                            else if(wasInColl)
+                                            {
+
+                                            }
+
+                                        }));
 
     g.addEntity(p2);
-    pl.addEntity(p2);
+    phys.addEntity(p2);
+    scriptEngine.addEntity(p2);
 
-    ///MANAGE INCORRECT STATE: PlayingSystem creates incorect states -> either it must not or graphic should not be able to crash cause of an incorect state or we create
-    ///     A Sytem dedicated to correcting incorrect states
+    Entity ex(Entity::Ex);
+    ex.addComponent(*new NodeComponent(43, 9));
+    ex.addComponent(*new CollisionComponent([](){MessageSystem::sendMessage(EXIT_REACHED);}));
 
-    ///MESSAGES: here: collision system creates a running=false information
+    phys.addEntity(ex);
 
-    //bool running = true;
-    for(int i = 0; i < 15; i++)
+    bool running = true;
+    while(running)
     {
-        pl.update();
         g.update();
+        gui.update();
+        pl.update();
+        phys.update();
+        scriptEngine.update();
+
+        running = isRunning();
     }
 
     return 0;
